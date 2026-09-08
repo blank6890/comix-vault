@@ -196,6 +196,18 @@ export function ReaderPage() {
   const nextChapter = chapterData?.nextChapter;
   const allChapters = chapterData?.allChapters || [];
 
+  const getPageUrl = (pageItem) => {
+    if (!pageItem) return '';
+    if (typeof pageItem === 'string') return pageItem;
+    return pageItem.url || pageItem.originalUrl || '';
+  };
+
+  const getOriginalUrl = (pageItem) => {
+    if (!pageItem) return '';
+    if (typeof pageItem === 'string') return pageItem;
+    return pageItem.originalUrl || pageItem.url || '';
+  };
+
   const nextPage = () => {
     if (currentPage < totalPages) {
       setCurrentPage((p) => p + 1);
@@ -214,7 +226,13 @@ export function ReaderPage() {
     }
   };
 
-  const handleImageError = (index) => {
+  const handleImageError = (index, pageItem) => {
+    // If proxy failed, try switching to direct original URL once before showing error
+    const orig = getOriginalUrl(pageItem);
+    if (orig && !failedImages[`${index}_orig`]) {
+      setFailedImages((prev) => ({ ...prev, [`${index}_orig`]: true }));
+      return;
+    }
     setFailedImages((prev) => ({ ...prev, [index]: true }));
   };
 
@@ -222,6 +240,7 @@ export function ReaderPage() {
     setFailedImages((prev) => {
       const updated = { ...prev };
       delete updated[index];
+      delete updated[`${index}_orig`];
       return updated;
     });
   };
@@ -403,8 +422,11 @@ export function ReaderPage() {
         {/* Webtoon Continuous Scroll Mode */}
         {readerMode === 'webtoon' && (
           <div className={`flex flex-col items-center ${gapClasses[imageGap] || 'gap-0'}`}>
-            {pages.map((imgUrl, index) => {
+            {pages.map((pageItem, index) => {
               const isFailed = failedImages[index];
+              const tryOriginal = failedImages[`${index}_orig`];
+              const displayUrl = tryOriginal ? getOriginalUrl(pageItem) : getPageUrl(pageItem);
+
               return (
                 <div
                   key={index}
@@ -423,15 +445,15 @@ export function ReaderPage() {
                     </div>
                   ) : (
                     <img
-                      src={imgUrl}
+                      src={displayUrl}
                       alt={`Page ${index + 1}`}
                       loading="lazy"
-                      onError={() => handleImageError(index)}
+                      onError={() => handleImageError(index, pageItem)}
                       className="w-full h-auto object-contain block select-none"
                     />
                   )}
 
-                  {/* Page number watermark watermark */}
+                  {/* Page number watermark */}
                   <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/60 text-[9px] font-mono text-slate-400 opacity-40 hover:opacity-100 transition-opacity">
                     {index + 1} / {totalPages}
                   </span>
@@ -456,8 +478,9 @@ export function ReaderPage() {
 
             <div className="relative max-h-[88vh] flex items-center justify-center">
               <img
-                src={pages[currentPage - 1]}
+                src={getPageUrl(pages[currentPage - 1])}
                 alt={`Page ${currentPage}`}
+                onError={() => handleImageError(currentPage - 1, pages[currentPage - 1])}
                 className="max-h-[85vh] w-auto object-contain rounded shadow-2xl"
               />
             </div>
@@ -479,15 +502,17 @@ export function ReaderPage() {
             <div className="flex items-center justify-center gap-2 max-h-[88vh]">
               {pages[currentPage - 1] && (
                 <img
-                  src={pages[currentPage - 1]}
+                  src={getPageUrl(pages[currentPage - 1])}
                   alt={`Page ${currentPage}`}
+                  onError={() => handleImageError(currentPage - 1, pages[currentPage - 1])}
                   className="max-h-[85vh] w-1/2 object-contain rounded"
                 />
               )}
               {pages[currentPage] && (
                 <img
-                  src={pages[currentPage]}
+                  src={getPageUrl(pages[currentPage])}
                   alt={`Page ${currentPage + 1}`}
+                  onError={() => handleImageError(currentPage, pages[currentPage])}
                   className="max-h-[85vh] w-1/2 object-contain rounded"
                 />
               )}

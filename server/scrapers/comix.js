@@ -172,6 +172,7 @@ export class ComixScraper {
       for (let i = totalChapters; i >= 1; i--) {
         chapters.push({
           id: `${manga.hid}-chapter-${i}`,
+          chapter: String(i),
           number: i,
           title: `Chapter ${i}`,
           dateFormatted: manga.chapterUpdatedAtFormatted || '',
@@ -183,6 +184,7 @@ export class ComixScraper {
       if (detailRaw.firstChapterUrl && !chapters.some(c => c.number === 0)) {
         chapters.push({
           id: `${manga.hid}-chapter-0`,
+          chapter: '0',
           number: 0,
           title: 'Prologue / Chapter 0',
           dateFormatted: '',

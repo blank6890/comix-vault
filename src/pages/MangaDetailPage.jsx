@@ -248,21 +248,21 @@ export function MangaDetailPage() {
                   </Link>
                 ) : firstChapter ? (
                   <Link
-                    to={`/read/${mangaSlug}/${firstChapter.id || firstChapter.hid || firstChapter.chapter}`}
+                    to={`/read/${mangaSlug}/${firstChapter.id || firstChapter.hid || firstChapter.chapter || firstChapter.number || '1'}`}
                     className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-sakura to-violet hover:from-sakura-dark hover:to-violet-dark text-white font-bold text-sm shadow-glow-sakura transition-all hover:scale-105"
                   >
                     <Play className="w-4 h-4 fill-white" />
-                    <span>Start Reading Ch. {firstChapter.chapter || '1'}</span>
+                    <span>Start Reading Ch. {firstChapter.chapter || firstChapter.number || '1'}</span>
                   </Link>
                 ) : null}
 
                 {latestChapter && (
                   <Link
-                    to={`/read/${mangaSlug}/${latestChapter.id || latestChapter.hid || latestChapter.chapter}`}
+                    to={`/read/${mangaSlug}/${latestChapter.id || latestChapter.hid || latestChapter.chapter || latestChapter.number}`}
                     className="flex items-center gap-2 px-5 py-3 rounded-xl bg-cyber-card border border-cyber-border hover:border-violet text-white font-bold text-sm transition-all"
                   >
                     <BookOpen className="w-4 h-4 text-cyan" />
-                    <span>Latest Ch. {latestChapter.chapter}</span>
+                    <span>Latest Ch. {latestChapter.chapter || latestChapter.number}</span>
                   </Link>
                 )}
               </div>

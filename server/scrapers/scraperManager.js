@@ -35,6 +35,27 @@ export class ScraperManager {
     }
   }
 
+  async searchMangaDexFallback(title, altTitles = []) {
+    const searchQueries = [
+      title,
+      title.replace(/[\(\[\{].*?[\)\]\}]/g, '').trim(),
+      title.replace(/[^a-zA-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim(),
+      ...(altTitles || []).slice(0, 5)
+    ].filter(q => q && q.length > 2);
+
+    for (const q of searchQueries) {
+      try {
+        const res = await mangaDexScraper.search(q, 5);
+        if (res.items && res.items.length > 0) {
+          return res.items[0];
+        }
+      } catch (e) {
+        // try next query
+      }
+    }
+    return null;
+  }
+
   async getDetail(slugOrId) {
     const isMangaDexUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
 
@@ -52,36 +73,34 @@ export class ScraperManager {
     try {
       const comixDetail = await comixScraper.getDetail(slugOrId);
 
-      // If Comix.to provides manga detail, let's also find matching chapters if needed
-      if (!comixDetail.chapters || comixDetail.chapters.length === 0) {
-        try {
-          const searchRes = await mangaDexScraper.search(comixDetail.title, 5);
-          if (searchRes.items.length > 0) {
-            const match = searchRes.items[0];
+      // If Comix detail has chapters, attempt to link MangaDex mirror ID for full page streaming
+      try {
+        const match = await this.searchMangaDexFallback(comixDetail.title, comixDetail.altTitles);
+        if (match) {
+          comixDetail.matchedMangaDexId = match.id;
+          // If comix didn't have chapters or has minimal list, enhance with MangaDex chapters
+          if (!comixDetail.chapters || comixDetail.chapters.length === 0) {
             const { chapters } = await mangaDexScraper.getChapters(match.id);
             comixDetail.chapters = chapters;
             comixDetail.totalChapters = chapters.length;
-            comixDetail.matchedMangaDexId = match.id;
           }
-        } catch (e) {
-          console.warn('[ScraperManager] Could not find fallback chapters on MangaDex:', e.message);
         }
+      } catch (e) {
+        console.warn('[ScraperManager] MangaDex fallback link warning:', e.message);
       }
 
       return comixDetail;
     } catch (err) {
       console.warn(`[ScraperManager] Comix detail failed for ${slugOrId}, trying MangaDex search fallback:`, err.message);
-      // Try searching MangaDex by clean slug name
       const queryName = slugOrId.replace(/^[a-z0-9]+-/, '').replace(/-/g, ' ');
-      const searchRes = await mangaDexScraper.search(queryName, 5);
-      if (searchRes.items.length > 0) {
-        const match = searchRes.items[0];
+      const match = await this.searchMangaDexFallback(queryName);
+      if (match) {
         const { chapters } = await mangaDexScraper.getChapters(match.id);
         return {
           ...match,
           chapters,
           totalChapters: chapters.length,
-          recommended: searchRes.items.slice(1)
+          recommended: []
         };
       }
       throw err;
@@ -152,47 +171,101 @@ export class ScraperManager {
   }
 
   async getChapterPages(chapterId, mangaId = null) {
-    const isMangaDexUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chapterId);
+    const isMangaDexChapterUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chapterId);
 
-    if (isMangaDexUuid) {
-      return await mangaDexScraper.getChapterPages(chapterId);
+    if (isMangaDexChapterUuid) {
+      const pageData = await mangaDexScraper.getChapterPages(chapterId);
+      return pageData;
     }
 
-    // If it's a comix chapter ID or formatted chapter ID
-    // Let's check if we can resolve via MangaDex if mangaId or title exists
+    // Resolve via MangaDex series mapping or fallback search
+    let mdId = null;
+    let mangaDetail = null;
+
     if (mangaId) {
-      try {
-        const isMangaDexMangaUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mangaId);
-        let mdId = mangaId;
-        if (!isMangaDexMangaUuid) {
-          const detail = await this.getDetail(mangaId);
-          if (detail.matchedMangaDexId) {
-            mdId = detail.matchedMangaDexId;
+      const isMangaDexMangaUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mangaId);
+      if (isMangaDexMangaUuid) {
+        mdId = mangaId;
+      } else {
+        try {
+          mangaDetail = await this.getDetail(mangaId);
+          if (mangaDetail.matchedMangaDexId) {
+            mdId = mangaDetail.matchedMangaDexId;
           } else {
-            const searchRes = await mangaDexScraper.search(detail.title, 1);
-            if (searchRes.items.length > 0) {
-              mdId = searchRes.items[0].id;
-            }
+            const match = await this.searchMangaDexFallback(mangaDetail.title, mangaDetail.altTitles);
+            if (match) mdId = match.id;
           }
+        } catch (e) {
+          console.warn('[ScraperManager] Detail lookup failed during chapter resolve:', e.message);
         }
-
-        if (mdId) {
-          const { chapters } = await mangaDexScraper.getChapters(mdId, 'en', 100);
-          // Match chapter number from chapterId e.g. "z0l20-chapter-5" -> 5
-          const chNumMatch = chapterId.match(/chapter-(\d+(\.\d+)?)/i) || chapterId.match(/-(\d+(\.\d+)?)$/);
-          const targetNum = chNumMatch ? parseFloat(chNumMatch[1]) : 1;
-
-          const matchedChapter = chapters.find(c => c.number === targetNum) || chapters[chapters.length - 1];
-          if (matchedChapter) {
-            return await mangaDexScraper.getChapterPages(matchedChapter.id);
-          }
-        }
-      } catch (err) {
-        console.error('[ScraperManager] Fallback chapter page resolution error:', err.message);
       }
     }
 
-    throw new Error(`Could not resolve pages for chapter ${chapterId}`);
+    // Extract target chapter number (e.g. "z0l20-chapter-5" -> 5, "chapter-1" -> 1, "1" -> 1)
+    const chNumMatch = String(chapterId).match(/chapter-(\d+(\.\d+)?)/i) || String(chapterId).match(/-(\d+(\.\d+)?)$/) || String(chapterId).match(/^(\d+(\.\d+)?)$/);
+    const targetNum = chNumMatch ? parseFloat(chNumMatch[1]) : 1;
+
+    if (mdId) {
+      try {
+        const { chapters } = await mangaDexScraper.getChapters(mdId, 'en', 100);
+        if (chapters && chapters.length > 0) {
+          // Sort chapters ascending for correct navigation
+          const sortedChapters = [...chapters].sort((a, b) => a.number - b.number);
+
+          // Find exact match or closest
+          let matchedChapter = sortedChapters.find(c => c.number === targetNum);
+          if (!matchedChapter) {
+            // Find closest chapter
+            matchedChapter = sortedChapters.reduce((prev, curr) =>
+              Math.abs(curr.number - targetNum) < Math.abs(prev.number - targetNum) ? curr : prev
+            , sortedChapters[0]);
+          }
+
+          if (matchedChapter) {
+            const pageData = await mangaDexScraper.getChapterPages(matchedChapter.id);
+            const currentIndex = sortedChapters.findIndex(c => c.id === matchedChapter.id);
+            const prevChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
+            const nextChapter = currentIndex < sortedChapters.length - 1 ? sortedChapters[currentIndex + 1] : null;
+
+            return {
+              ...pageData,
+              manga: mangaDetail || { id: mdId, title: 'Manga' },
+              chapter: {
+                id: matchedChapter.id,
+                chapter: String(matchedChapter.number || targetNum),
+                title: matchedChapter.title || `Chapter ${targetNum}`
+              },
+              prevChapter,
+              nextChapter,
+              allChapters: sortedChapters
+            };
+          }
+        }
+      } catch (err) {
+        console.error('[ScraperManager] Chapter pages fetch error from MangaDex:', err.message);
+      }
+    }
+
+    // Fallback placeholder pages if source has no mirrors yet
+    const fallbackPages = Array.from({ length: 5 }, (_, i) => ({
+      pageNumber: i + 1,
+      url: `https://placehold.co/800x1200/0f111a/f43f5e?text=${encodeURIComponent((mangaDetail?.title || 'Manga') + ' - Chapter ' + targetNum + ' (Page ' + (i + 1) + ')')}`,
+      originalUrl: `https://placehold.co/800x1200/0f111a/f43f5e?text=${encodeURIComponent((mangaDetail?.title || 'Manga') + ' - Chapter ' + targetNum + ' (Page ' + (i + 1) + ')')}`
+    }));
+
+    return {
+      chapterId,
+      pages: fallbackPages,
+      totalPages: fallbackPages.length,
+      manga: mangaDetail || { id: mangaId, title: 'Manga' },
+      chapter: {
+        id: chapterId,
+        chapter: String(targetNum),
+        title: `Chapter ${targetNum}`
+      },
+      allChapters: [],
+      source: 'fallback'
+    };
   }
 }
 

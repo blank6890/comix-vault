@@ -12,11 +12,19 @@ router.get('/pages/:chapterId', async (req, res) => {
     const data = await scraperManager.getChapterPages(chapterId, mangaId);
 
     // Transform page image URLs into proxied URLs
-    const proxiedPages = data.pages.map(page => ({
-      pageNumber: page.pageNumber,
-      url: `/api/proxy/image?url=${encodeURIComponent(page.url)}`,
-      originalUrl: page.url
-    }));
+    const proxiedPages = (data.pages || []).map((page, idx) => {
+      const origUrl = typeof page === 'string' ? page : (page.url || page.originalUrl || '');
+      // If it's already a local placeholder or proxy url, use as is
+      const proxiedUrl = origUrl.startsWith('http')
+        ? `/api/proxy/image?url=${encodeURIComponent(origUrl)}`
+        : origUrl;
+
+      return {
+        pageNumber: page.pageNumber || idx + 1,
+        url: proxiedUrl,
+        originalUrl: origUrl
+      };
+    });
 
     res.json({
       success: true,
