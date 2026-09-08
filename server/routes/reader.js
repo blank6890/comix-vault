@@ -14,8 +14,8 @@ router.get('/pages/:chapterId', async (req, res) => {
     // Transform page image URLs into proxied URLs
     const proxiedPages = (data.pages || []).map((page, idx) => {
       const origUrl = typeof page === 'string' ? page : (page.url || page.originalUrl || '');
-      // If it's already a local placeholder, or a MangaDex CDN URL (which supports CORS), use as is
-      const proxiedUrl = origUrl.startsWith('http') && !origUrl.includes('mangadex.network')
+      // Proxy all external HTTP images for maximum compatibility and to bypass client-side DNS/adblock issues
+      const proxiedUrl = origUrl.startsWith('http')
         ? `/api/proxy/image?url=${encodeURIComponent(origUrl)}`
         : origUrl;
 
