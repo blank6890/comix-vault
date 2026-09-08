@@ -265,6 +265,13 @@ export function MangaDetailPage() {
                     <span>Latest Ch. {latestChapter.chapter || latestChapter.number}</span>
                   </Link>
                 )}
+
+                {!userHistory && !firstChapter && !latestChapter && (
+                  <div className="flex items-center gap-2 px-6 py-3 rounded-xl bg-cyber-card/50 border border-cyber-border/50 text-cyber-muted font-bold text-sm cursor-not-allowed">
+                    <BookOpen className="w-4 h-4 opacity-50" />
+                    <span>No Chapters Available</span>
+                  </div>
+                )}
               </div>
 
               {/* Synopsis Section */}
