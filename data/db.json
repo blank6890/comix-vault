@@ -1,0 +1,14 @@
+{
+  "history": [],
+  "bookmarks": [],
+  "settings": {
+    "theme": "cyberpunk",
+    "readerMode": "webtoon",
+    "readingDirection": "ttb",
+    "readerBg": "black",
+    "readerBrightness": 100,
+    "pageWidth": 800,
+    "autoScrollSpeed": 0,
+    "enableSoundEffects": false
+  }
+}

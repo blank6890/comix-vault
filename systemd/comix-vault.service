@@ -1,0 +1,18 @@
+[Unit]
+Description=Comix Vault - Manga & Manhwa Reader for Raspberry Pi
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/comix-vault
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=comix-vault
+Environment=NODE_ENV=production PORT=3000 HOST=0.0.0.0
+
+[Install]
+WantedBy=multi-user.target
