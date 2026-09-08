@@ -182,7 +182,23 @@ export class ScraperManager {
     const isMangaDexChapterUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chapterId);
 
     if (isMangaDexChapterUuid) {
-      const pageData = await mangaDexScraper.getChapterPages(chapterId);
+      let pageData = { pages: [], source: 'mangadex', isExternal: false, externalUrl: null };
+      
+      try {
+        // Fetch chapter metadata to check for externalUrl
+        const chMeta = await mangaDexScraper.fetchJson(`/chapter/${chapterId}`);
+        if (chMeta?.data?.attributes?.externalUrl) {
+          pageData.isExternal = true;
+          pageData.externalUrl = chMeta.data.attributes.externalUrl;
+          pageData.chapterId = chapterId;
+          pageData.totalPages = 0;
+        } else {
+          pageData = await mangaDexScraper.getChapterPages(chapterId);
+        }
+      } catch (e) {
+        console.warn('[ScraperManager] Failed to fetch chapter metadata, trying pages anyway:', e.message);
+        pageData = await mangaDexScraper.getChapterPages(chapterId);
+      }
 
       // Resolve navigation context if we have a manga ID
       if (mangaId) {

@@ -17,7 +17,8 @@ import {
   Eye,
   CheckCircle,
   Menu,
-  X
+  X,
+  ExternalLink
 } from 'lucide-react';
 import { api } from '../services/api.js';
 import { useReader } from '../context/ReaderContext.jsx';
@@ -281,6 +282,34 @@ export function ReaderPage() {
         <p className="font-mono text-sm tracking-widest text-slate-300 uppercase">
           Streaming Chapter Pages...
         </p>
+      </div>
+    );
+  }
+
+  if (chapterData?.isExternal) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-[#08090d] text-white text-center gap-4">
+        <ExternalLink className="w-12 h-12 text-sakura mb-2" />
+        <h2 className="text-xl font-bold">Official Chapter Link</h2>
+        <p className="text-cyber-muted text-sm max-w-md">
+          This chapter is officially licensed and not hosted here. You can read it directly from the publisher.
+        </p>
+        <div className="flex items-center gap-3 mt-4">
+          <a
+            href={chapterData.externalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-6 py-3 rounded-xl bg-gradient-to-r from-sakura to-violet text-sm font-bold shadow-glow-sakura hover:scale-105 transition-all"
+          >
+            Open Official Site
+          </a>
+          <Link
+            to={`/manga/${mangaId}`}
+            className="px-6 py-3 rounded-xl bg-cyber-card border border-cyber-border text-sm font-bold hover:border-sakura transition-all"
+          >
+            Back to Title
+          </Link>
+        </div>
       </div>
     );
   }
