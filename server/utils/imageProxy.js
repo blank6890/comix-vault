@@ -4,7 +4,14 @@ import { CONFIG } from '../config.js';
 
 export async function proxyImage(req, res) {
   const imageUrl = req.query.url;
-  const referer = req.query.referer || 'https://comick.io/';
+  let referer = req.query.referer;
+  if (!referer) {
+    if (imageUrl && imageUrl.includes('mangadex')) {
+      referer = 'https://mangadex.org/';
+    } else {
+      referer = 'https://comick.io/';
+    }
+  }
 
   if (!imageUrl) {
     return res.status(400).send('Image URL parameter required');
