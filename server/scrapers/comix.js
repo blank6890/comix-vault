@@ -1,21 +1,45 @@
 import { CONFIG } from '../config.js';
 import { appCache } from '../utils/cache.js';
 
+const COMICK_ORIGIN = 'https://comick.io';
+const COMICK_API_BASE_URL = 'https://api.comick.io';
+const COMICK_IMAGE_HOSTS = new Set([
+  'meo.comick.pictures',
+  'meo3.comick.pictures'
+]);
+
+export function getComickHeaders({ accept = 'application/json, text/plain, */*' } = {}) {
+  return {
+    'User-Agent': CONFIG.USER_AGENT,
+    'Accept': accept,
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': `${COMICK_ORIGIN}/`
+  };
+}
+
+export function isAllowedComickImageUrl(imageUrl) {
+  try {
+    const url = new URL(imageUrl);
+    return (url.protocol === 'https:' || url.protocol === 'http:') &&
+      (COMICK_IMAGE_HOSTS.has(url.hostname) || url.hostname.endsWith('.comick.pictures'));
+  } catch {
+    return false;
+  }
+}
+
 export class ComixScraper {
   constructor() {
-    this.baseUrl = 'https://comix.to';
+    this.baseUrl = COMICK_ORIGIN;
+    this.apiBaseUrl = COMICK_API_BASE_URL;
   }
 
   async fetchHtml(urlPath) {
     const fullUrl = urlPath.startsWith('http') ? urlPath : `${this.baseUrl}${urlPath}`;
     try {
       const response = await fetch(fullUrl, {
-        headers: {
-          'User-Agent': CONFIG.USER_AGENT,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Referer': this.baseUrl
-        }
+        headers: getComickHeaders({
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+        })
       });
 
       if (!response.ok) {
@@ -40,6 +64,105 @@ export class ComixScraper {
       console.error('[ComixScraper] Failed to parse initial-data JSON:', err.message);
       return null;
     }
+  }
+
+  async fetchApi(path, params = {}) {
+    const url = new URL(path, this.apiBaseUrl);
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) url.searchParams.set(key, value);
+    }
+
+    const response = await fetch(url, {
+      headers: getComickHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error ${response.status} fetching ${url}`);
+    }
+
+    try {
+      return await response.json();
+    } catch (err) {
+      throw new Error(`Invalid JSON returned by Comick API for ${url}: ${err.message}`);
+    }
+  }
+
+  buildImageUrl(image) {
+    const path = typeof image === 'string' ? image : image?.url;
+    if (!path) return null;
+    if (/^https?:\/\//i.test(path)) return path;
+
+    const host = image?.host_name || image?.host || 'meo.comick.pictures';
+    const normalizedHost = String(host).replace(/^https?:\/\//i, '').replace(/\/$/, '');
+    return `https://${normalizedHost}/${String(path).replace(/^\//, '')}`;
+  }
+
+  async getChapters(mangaHid) {
+    if (!mangaHid) throw new Error('Comick manga ID is required');
+
+    const cacheKey = `comick_chapters_${mangaHid}`;
+    const cached = appCache.get(cacheKey);
+    if (cached) return cached;
+
+    const data = await this.fetchApi(`/comic/${encodeURIComponent(mangaHid)}/chapters`, {
+      lang: 'en',
+      limit: '500',
+      page: '1'
+    });
+    const rawChapters = data?.chapters || data?.data?.chapters || [];
+    if (!Array.isArray(rawChapters)) {
+      throw new Error(`Invalid chapter list returned by Comick for ${mangaHid}`);
+    }
+
+    const chapters = rawChapters.map((chapter) => {
+      const id = chapter.hid || chapter.id;
+      if (!id) return null;
+      const number = Number(chapter.chap ?? chapter.chapter ?? 0);
+      return {
+        id,
+        chapter: String(chapter.chap ?? chapter.chapter ?? ''),
+        number: Number.isFinite(number) ? number : 0,
+        title: chapter.title || `Chapter ${chapter.chap ?? chapter.chapter ?? ''}`.trim(),
+        dateFormatted: chapter.created_at || chapter.publish_at || '',
+        mangaHid,
+        source: 'comix'
+      };
+    }).filter(Boolean).sort((a, b) => b.number - a.number);
+
+    appCache.set(cacheKey, chapters, 1200);
+    return chapters;
+  }
+
+  async getChapterPages(chapterHid) {
+    if (!chapterHid) throw new Error('Comick chapter ID is required');
+
+    const cacheKey = `comick_chapter_pages_${chapterHid}`;
+    const cached = appCache.get(cacheKey);
+    if (cached) return cached;
+
+    const data = await this.fetchApi(`/chapter/${encodeURIComponent(chapterHid)}`, { tachiyomi: 'true' });
+    const images = data?.chapter?.images;
+    if (!Array.isArray(images) || images.length === 0) {
+      throw new Error(`No readable pages returned by Comick for chapter ${chapterHid}`);
+    }
+
+    const pages = images.map((image, index) => {
+      const url = this.buildImageUrl(image);
+      return url ? { pageNumber: index + 1, url, originalUrl: url } : null;
+    }).filter(Boolean);
+
+    if (pages.length === 0) {
+      throw new Error(`Comick returned no usable image URLs for chapter ${chapterHid}`);
+    }
+
+    const result = {
+      chapterId: chapterHid,
+      pages,
+      totalPages: pages.length,
+      source: 'comick'
+    };
+    appCache.set(cacheKey, result, 900);
+    return result;
   }
 
   formatPoster(poster) {
@@ -87,11 +210,51 @@ export class ComixScraper {
     const cached = appCache.get(cacheKey);
     if (cached) return cached;
 
+    // Try API-first approach (resilient to HTML/JS obfuscation changes)
+    try {
+      const [trendingRes, topRes, recentRes] = await Promise.allSettled([
+        this.fetchApi('/top', { comic_types: 'manhwa,manga,manhua', accept_mature_content: 'false' }),
+        this.fetchApi('/top', { comic_types: 'manhwa', accept_mature_content: 'false', sort: 'follow' }),
+        this.fetchApi('/top', { comic_types: 'manhwa,manga,manhua', accept_mature_content: 'false', sort: 'created_at' })
+      ]);
+
+      const extractItems = (settled) => {
+        if (settled.status !== 'fulfilled') return [];
+        const data = settled.value;
+        const items = Array.isArray(data) ? data
+          : (data?.data || data?.comics || data?.rank || data?.items || []);
+        return (Array.isArray(items) ? items : []).map(item => this.normalizeMangaItem(item)).filter(Boolean);
+      };
+
+      const trending = extractItems(trendingRes);
+      const topFollowed = extractItems(topRes);
+      const recentlyAdded = extractItems(recentRes);
+
+      if (trending.length > 0 || topFollowed.length > 0) {
+        const heroSlides = (trending.length > 0 ? trending : topFollowed).slice(0, 8);
+        const result = {
+          heroSlides,
+          trending: trending.slice(0, 30),
+          topFollowed: topFollowed.slice(0, 30),
+          latestUpdates: trending.slice(0, 30),
+          recentlyAdded: recentlyAdded.slice(0, 20),
+          manhwa: topFollowed.filter(m => m.type === 'manhwa').slice(0, 20),
+          manga: trending.filter(m => m.type === 'manga').slice(0, 20),
+          manhua: trending.filter(m => m.type === 'manhua').slice(0, 20)
+        };
+        appCache.set(cacheKey, result, 600);
+        return result;
+      }
+    } catch (apiErr) {
+      console.warn('[ComixScraper] API-based home failed, trying HTML fallback:', apiErr.message);
+    }
+
+    // Fallback: parse HTML initial-data (legacy approach)
     const html = await this.fetchHtml('/');
     const initialData = this.parseInitialData(html);
 
     if (!initialData || !initialData.queries) {
-      throw new Error('Could not extract home page data from Comix.to');
+      throw new Error('Could not extract home page data from Comick');
     }
 
     const queries = initialData.queries;
@@ -136,6 +299,41 @@ export class ComixScraper {
     const cached = appCache.get(cacheKey);
     if (cached) return cached;
 
+    // Try API-first approach
+    try {
+      const apiData = await this.fetchApi(`/comic/${encodeURIComponent(cleanSlug)}`);
+      const comic = apiData?.comic || apiData;
+
+      if (comic && (comic.hid || comic.id)) {
+        const manga = this.normalizeMangaItem(comic);
+        const chapters = await this.getChapters(manga.hid);
+
+        // Try to get recommendations from API
+        let recommended = [];
+        try {
+          const recData = await this.fetchApi(`/comic/${encodeURIComponent(cleanSlug)}/recommendations`);
+          const recItems = recData?.data || recData?.items || (Array.isArray(recData) ? recData : []);
+          recommended = recItems.map(item => this.normalizeMangaItem(item)).filter(Boolean);
+        } catch {
+          // recommendations are non-critical
+        }
+
+        const result = {
+          ...manga,
+          chapters,
+          totalChapters: chapters.length,
+          recommended,
+          scanlationGroups: []
+        };
+
+        appCache.set(cacheKey, result, 1200);
+        return result;
+      }
+    } catch (apiErr) {
+      console.warn('[ComixScraper] API-based detail failed, trying HTML fallback:', apiErr.message);
+    }
+
+    // Fallback: parse HTML initial-data (legacy approach)
     const html = await this.fetchHtml(`/title/${cleanSlug}`);
     const initialData = this.parseInitialData(html);
 
@@ -164,41 +362,12 @@ export class ComixScraper {
     const manga = this.normalizeMangaItem(detailRaw);
     const recommended = recommendedRaw.map(item => this.normalizeMangaItem(item)).filter(Boolean);
 
-    // Generate standard chapters if chapter count exists
-    const totalChapters = manga.latestChapter || 0;
-    const chapters = [];
-
-    if (totalChapters > 0) {
-      for (let i = totalChapters; i >= 1; i--) {
-        chapters.push({
-          id: `${manga.hid}-chapter-${i}`,
-          chapter: String(i),
-          number: i,
-          title: `Chapter ${i}`,
-          dateFormatted: manga.chapterUpdatedAtFormatted || '',
-          mangaHid: manga.hid,
-          mangaSlug: manga.slug,
-          source: 'comix'
-        });
-      }
-      if (detailRaw.firstChapterUrl && !chapters.some(c => c.number === 0)) {
-        chapters.push({
-          id: `${manga.hid}-chapter-0`,
-          chapter: '0',
-          number: 0,
-          title: 'Prologue / Chapter 0',
-          dateFormatted: '',
-          mangaHid: manga.hid,
-          mangaSlug: manga.slug,
-          source: 'comix'
-        });
-      }
-    }
+    const chapters = await this.getChapters(manga.hid);
 
     const result = {
       ...manga,
       chapters,
-      totalChapters,
+      totalChapters: chapters.length,
       recommended,
       scanlationGroups: groupsRaw
     };

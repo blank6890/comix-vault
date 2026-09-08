@@ -178,9 +178,65 @@ export class ScraperManager {
       return pageData;
     }
 
-    // Resolve via MangaDex series mapping or fallback search
-    let mdId = null;
     let mangaDetail = null;
+
+    // Extract target chapter number (e.g. "z0l20-chapter-5" -> 5, "chapter-1" -> 1, "1" -> 1)
+    const chNumMatch = String(chapterId).match(/chapter-(\d+(\.\d+)?)/i) || String(chapterId).match(/-(\d+(\.\d+)?)$/) || String(chapterId).match(/^(\d+(\.\d+)?)$/);
+    const targetNum = chNumMatch ? parseFloat(chNumMatch[1]) : 1;
+
+    // --- PRIMARY: Try Comick API directly for non-UUID chapter HIDs ---
+    try {
+      const comickPageData = await comixScraper.getChapterPages(chapterId);
+
+      if (comickPageData && comickPageData.pages && comickPageData.pages.length > 0) {
+        // Resolve manga detail and chapter list for navigation context
+        let resolvedManga = mangaDetail;
+        let allChapters = [];
+        let prevChapter = null;
+        let nextChapter = null;
+
+        if (mangaId) {
+          try {
+            if (!resolvedManga) {
+              resolvedManga = await this.getDetail(mangaId);
+            }
+            allChapters = resolvedManga?.chapters || [];
+            if (allChapters.length > 0) {
+              const sortedChapters = [...allChapters].sort((a, b) => a.number - b.number);
+              const currentIndex = sortedChapters.findIndex(c =>
+                String(c.id) === String(chapterId) || c.number === targetNum
+              );
+              if (currentIndex >= 0) {
+                prevChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
+                nextChapter = currentIndex < sortedChapters.length - 1 ? sortedChapters[currentIndex + 1] : null;
+                allChapters = sortedChapters;
+              }
+            }
+          } catch (navErr) {
+            console.warn('[ScraperManager] Chapter navigation resolve warning:', navErr.message);
+          }
+        }
+
+        return {
+          ...comickPageData,
+          manga: resolvedManga || { id: mangaId, title: 'Manga' },
+          chapter: {
+            id: chapterId,
+            chapter: String(targetNum),
+            title: `Chapter ${targetNum}`
+          },
+          prevChapter,
+          nextChapter,
+          allChapters,
+          source: 'comick'
+        };
+      }
+    } catch (comickErr) {
+      console.warn('[ScraperManager] Comick chapter pages failed, falling back to MangaDex:', comickErr.message);
+    }
+
+    // --- FALLBACK: Try MangaDex if Comick failed ---
+    let mdId = null;
 
     if (mangaId) {
       const isMangaDexMangaUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mangaId);
@@ -188,7 +244,9 @@ export class ScraperManager {
         mdId = mangaId;
       } else {
         try {
-          mangaDetail = await this.getDetail(mangaId);
+          if (!mangaDetail) {
+            mangaDetail = await this.getDetail(mangaId);
+          }
           if (mangaDetail.matchedMangaDexId) {
             mdId = mangaDetail.matchedMangaDexId;
           } else {
@@ -196,14 +254,10 @@ export class ScraperManager {
             if (match) mdId = match.id;
           }
         } catch (e) {
-          console.warn('[ScraperManager] Detail lookup failed during chapter resolve:', e.message);
+          console.warn('[ScraperManager] Detail lookup failed during MangaDex fallback resolve:', e.message);
         }
       }
     }
-
-    // Extract target chapter number (e.g. "z0l20-chapter-5" -> 5, "chapter-1" -> 1, "1" -> 1)
-    const chNumMatch = String(chapterId).match(/chapter-(\d+(\.\d+)?)/i) || String(chapterId).match(/-(\d+(\.\d+)?)$/) || String(chapterId).match(/^(\d+(\.\d+)?)$/);
-    const targetNum = chNumMatch ? parseFloat(chNumMatch[1]) : 1;
 
     if (mdId) {
       try {

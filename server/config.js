@@ -11,6 +11,6 @@ export const CONFIG = {
   DATA_DIR: path.join(__dirname, '..', 'data'),
   CACHE_TTL_MINUTES: parseInt(process.env.CACHE_TTL_MINUTES || '15', 10),
   IMAGE_CACHE_DIR: path.join(__dirname, '..', 'data', 'image_cache'),
-  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
   DEFAULT_SOURCES: ['comix', 'mangadex']
 };
