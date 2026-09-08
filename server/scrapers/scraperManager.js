@@ -2,37 +2,69 @@ import { comixScraper } from './comix.js';
 import { mangaDexScraper } from './mangadex.js';
 import { appCache } from '../utils/cache.js';
 
+// Track whether the Comick source is reachable.
+// Starts disabled since comick.io/comick.cc are confirmed dead (Sept 2025 DMCA shutdown).
+// If a future mirror comes alive, this can be toggled via /api/system/toggle-comick
+let comickEnabled = false;
+
 export class ScraperManager {
+  isComickEnabled() {
+    return comickEnabled;
+  }
+
+  setComickEnabled(enabled) {
+    comickEnabled = !!enabled;
+    // Clear caches so fresh data is fetched from the new source
+    appCache.flush?.() || appCache.flushAll?.();
+  }
+
   async getHome() {
-    try {
-      const comixHome = await comixScraper.getHome();
-      return {
-        ...comixHome,
-        source: 'comix'
-      };
-    } catch (err) {
-      console.warn('[ScraperManager] Comix home failed, falling back to MangaDex:', err.message);
-      // Fallback to MangaDex trending manhwa
-      const [manhwaRes, mangaRes, popularRes] = await Promise.all([
-        mangaDexScraper.search('', 20, 0, 'manhwa'),
-        mangaDexScraper.search('', 20, 0, 'manga'),
-        mangaDexScraper.search('', 20, 0)
-      ]);
-
-      const heroSlides = (manhwaRes.items.length > 0 ? manhwaRes.items : popularRes.items).slice(0, 8);
-
-      return {
-        heroSlides,
-        trending: popularRes.items,
-        topFollowed: manhwaRes.items,
-        latestUpdates: mangaRes.items,
-        recentlyAdded: popularRes.items.slice(0, 15),
-        manhwa: manhwaRes.items,
-        manga: mangaRes.items,
-        manhua: [],
-        source: 'mangadex_fallback'
-      };
+    // Try Comick first only if it's enabled
+    if (comickEnabled) {
+      try {
+        const comixHome = await comixScraper.getHome();
+        if (comixHome && (comixHome.trending?.length > 0 || comixHome.topFollowed?.length > 0)) {
+          return { ...comixHome, source: 'comix' };
+        }
+      } catch (err) {
+        console.warn('[ScraperManager] Comix home failed:', err.message);
+      }
     }
+
+    // Primary: MangaDex
+    const cacheKey = 'mangadex_home';
+    const cached = appCache.get(cacheKey);
+    if (cached) return cached;
+
+    const [manhwaRes, mangaRes, popularRes, manhuaRes] = await Promise.allSettled([
+      mangaDexScraper.search('', 24, 0, 'manhwa'),
+      mangaDexScraper.search('', 24, 0, 'manga'),
+      mangaDexScraper.search('', 24, 0),
+      mangaDexScraper.search('', 20, 0, 'manhua')
+    ]);
+
+    const extract = (r) => r.status === 'fulfilled' ? (r.value?.items || []) : [];
+    const manhwa = extract(manhwaRes);
+    const manga = extract(mangaRes);
+    const popular = extract(popularRes);
+    const manhua = extract(manhuaRes);
+
+    const heroSlides = (manhwa.length > 0 ? manhwa : popular).slice(0, 8);
+
+    const result = {
+      heroSlides,
+      trending: popular.slice(0, 30),
+      topFollowed: manhwa.slice(0, 30),
+      latestUpdates: manga.slice(0, 30),
+      recentlyAdded: popular.slice(0, 20),
+      manhwa: manhwa.slice(0, 20),
+      manga: manga.slice(0, 20),
+      manhua: manhua.slice(0, 20),
+      source: 'mangadex'
+    };
+
+    appCache.set(cacheKey, result, 600); // 10 min cache
+    return result;
   }
 
   async searchMangaDexFallback(title, altTitles = []) {
@@ -57,6 +89,7 @@ export class ScraperManager {
   }
 
   async getDetail(slugOrId) {
+    // If it's a MangaDex UUID, go directly to MangaDex
     const isMangaDexUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
 
     if (isMangaDexUuid) {
@@ -70,41 +103,45 @@ export class ScraperManager {
       };
     }
 
-    try {
-      const comixDetail = await comixScraper.getDetail(slugOrId);
-
-      // If Comix detail has chapters, attempt to link MangaDex mirror ID for full page streaming
+    // Try Comick if enabled (for Comick-style slugs like "abc123-manga-name")
+    if (comickEnabled) {
       try {
-        const match = await this.searchMangaDexFallback(comixDetail.title, comixDetail.altTitles);
-        if (match) {
-          comixDetail.matchedMangaDexId = match.id;
-          // If comix didn't have chapters or has minimal list, enhance with MangaDex chapters
-          if (!comixDetail.chapters || comixDetail.chapters.length === 0) {
-            const { chapters } = await mangaDexScraper.getChapters(match.id);
-            comixDetail.chapters = chapters;
-            comixDetail.totalChapters = chapters.length;
-          }
-        }
-      } catch (e) {
-        console.warn('[ScraperManager] MangaDex fallback link warning:', e.message);
-      }
+        const comixDetail = await comixScraper.getDetail(slugOrId);
 
-      return comixDetail;
-    } catch (err) {
-      console.warn(`[ScraperManager] Comix detail failed for ${slugOrId}, trying MangaDex search fallback:`, err.message);
-      const queryName = slugOrId.replace(/^[a-z0-9]+-/, '').replace(/-/g, ' ');
-      const match = await this.searchMangaDexFallback(queryName);
-      if (match) {
-        const { chapters } = await mangaDexScraper.getChapters(match.id);
-        return {
-          ...match,
-          chapters,
-          totalChapters: chapters.length,
-          recommended: []
-        };
+        // Try to link a MangaDex mirror for page streaming
+        try {
+          const match = await this.searchMangaDexFallback(comixDetail.title, comixDetail.altTitles);
+          if (match) {
+            comixDetail.matchedMangaDexId = match.id;
+            if (!comixDetail.chapters || comixDetail.chapters.length === 0) {
+              const { chapters } = await mangaDexScraper.getChapters(match.id);
+              comixDetail.chapters = chapters;
+              comixDetail.totalChapters = chapters.length;
+            }
+          }
+        } catch (e) {
+          console.warn('[ScraperManager] MangaDex fallback link warning:', e.message);
+        }
+
+        return comixDetail;
+      } catch (err) {
+        console.warn(`[ScraperManager] Comix detail failed for ${slugOrId}:`, err.message);
       }
-      throw err;
     }
+
+    // Primary: Search MangaDex by extracted title from slug
+    const queryName = slugOrId.replace(/^[a-z0-9]+-/, '').replace(/-/g, ' ');
+    const match = await this.searchMangaDexFallback(queryName);
+    if (match) {
+      const { chapters } = await mangaDexScraper.getChapters(match.id);
+      return {
+        ...match,
+        chapters,
+        totalChapters: chapters.length,
+        recommended: []
+      };
+    }
+    throw new Error(`Could not find manga "${queryName}" on any source`);
   }
 
   async getGenres() {
@@ -133,109 +170,124 @@ export class ScraperManager {
     const cached = appCache.get(cacheKey);
     if (cached) return cached;
 
-    // Search MangaDex
+    // Search MangaDex (primary)
     const result = await mangaDexScraper.search(query, limit, offset, type);
-
-    // Also search in cached comix titles
-    try {
-      const comixHome = await comixScraper.getHome();
-      const allComix = [
-        ...comixHome.trending,
-        ...comixHome.topFollowed,
-        ...comixHome.latestUpdates,
-        ...comixHome.recentlyAdded
-      ];
-
-      const q = (query || '').toLowerCase().trim();
-      if (q) {
-        const matchingComix = allComix.filter(m =>
-          m.title.toLowerCase().includes(q) ||
-          m.altTitles.some(t => (t || '').toLowerCase().includes(q))
-        );
-
-        // Merge without duplicates by title
-        const existingTitles = new Set(result.items.map(i => i.title.toLowerCase()));
-        for (const item of matchingComix) {
-          if (!existingTitles.has(item.title.toLowerCase())) {
-            result.items.unshift(item);
-            existingTitles.add(item.title.toLowerCase());
-          }
-        }
-      }
-    } catch (e) {
-      // ignore
-    }
 
     appCache.set(cacheKey, result, 300); // 5 min cache
     return result;
   }
 
   async getChapterPages(chapterId, mangaId = null) {
+    // If it's a MangaDex UUID chapter ID, go straight to MangaDex
     const isMangaDexChapterUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chapterId);
 
     if (isMangaDexChapterUuid) {
       const pageData = await mangaDexScraper.getChapterPages(chapterId);
+
+      // Resolve navigation context if we have a manga ID
+      if (mangaId) {
+        try {
+          const isMdManga = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mangaId);
+          const mdMangaId = isMdManga ? mangaId : null;
+          let mangaDetail = null;
+
+          if (mdMangaId) {
+            mangaDetail = await mangaDexScraper.getManga(mdMangaId);
+          } else {
+            mangaDetail = await this.getDetail(mangaId);
+          }
+
+          const resolvedMdId = mdMangaId || mangaDetail?.id;
+          if (resolvedMdId) {
+            const { chapters } = await mangaDexScraper.getChapters(resolvedMdId, 'en', 100);
+            const sortedChapters = [...chapters].sort((a, b) => a.number - b.number);
+            const currentIndex = sortedChapters.findIndex(c => c.id === chapterId);
+
+            if (currentIndex >= 0) {
+              const prevChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
+              const nextChapter = currentIndex < sortedChapters.length - 1 ? sortedChapters[currentIndex + 1] : null;
+              const chapter = sortedChapters[currentIndex];
+
+              return {
+                ...pageData,
+                manga: mangaDetail || { id: resolvedMdId, title: 'Manga' },
+                chapter: {
+                  id: chapterId,
+                  chapter: String(chapter.number || '1'),
+                  title: chapter.title || `Chapter ${chapter.number || 1}`
+                },
+                prevChapter,
+                nextChapter,
+                allChapters: sortedChapters
+              };
+            }
+          }
+        } catch (navErr) {
+          console.warn('[ScraperManager] Navigation context resolve warning:', navErr.message);
+        }
+      }
+
       return pageData;
     }
 
+    // --- Non-UUID chapter ID (Comick-style HID) ---
     let mangaDetail = null;
 
     // Extract target chapter number (e.g. "z0l20-chapter-5" -> 5, "chapter-1" -> 1, "1" -> 1)
     const chNumMatch = String(chapterId).match(/chapter-(\d+(\.\d+)?)/i) || String(chapterId).match(/-(\d+(\.\d+)?)$/) || String(chapterId).match(/^(\d+(\.\d+)?)$/);
     const targetNum = chNumMatch ? parseFloat(chNumMatch[1]) : 1;
 
-    // --- PRIMARY: Try Comick API directly for non-UUID chapter HIDs ---
-    try {
-      const comickPageData = await comixScraper.getChapterPages(chapterId);
+    // Try Comick if enabled
+    if (comickEnabled) {
+      try {
+        const comickPageData = await comixScraper.getChapterPages(chapterId);
 
-      if (comickPageData && comickPageData.pages && comickPageData.pages.length > 0) {
-        // Resolve manga detail and chapter list for navigation context
-        let resolvedManga = mangaDetail;
-        let allChapters = [];
-        let prevChapter = null;
-        let nextChapter = null;
+        if (comickPageData && comickPageData.pages && comickPageData.pages.length > 0) {
+          let resolvedManga = mangaDetail;
+          let allChapters = [];
+          let prevChapter = null;
+          let nextChapter = null;
 
-        if (mangaId) {
-          try {
-            if (!resolvedManga) {
+          if (mangaId) {
+            try {
               resolvedManga = await this.getDetail(mangaId);
-            }
-            allChapters = resolvedManga?.chapters || [];
-            if (allChapters.length > 0) {
-              const sortedChapters = [...allChapters].sort((a, b) => a.number - b.number);
-              const currentIndex = sortedChapters.findIndex(c =>
-                String(c.id) === String(chapterId) || c.number === targetNum
-              );
-              if (currentIndex >= 0) {
-                prevChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
-                nextChapter = currentIndex < sortedChapters.length - 1 ? sortedChapters[currentIndex + 1] : null;
-                allChapters = sortedChapters;
+              allChapters = resolvedManga?.chapters || [];
+              if (allChapters.length > 0) {
+                const sortedChapters = [...allChapters].sort((a, b) => a.number - b.number);
+                const currentIndex = sortedChapters.findIndex(c =>
+                  String(c.id) === String(chapterId) || c.number === targetNum
+                );
+                if (currentIndex >= 0) {
+                  prevChapter = currentIndex > 0 ? sortedChapters[currentIndex - 1] : null;
+                  nextChapter = currentIndex < sortedChapters.length - 1 ? sortedChapters[currentIndex + 1] : null;
+                  allChapters = sortedChapters;
+                }
               }
+            } catch (navErr) {
+              console.warn('[ScraperManager] Chapter navigation resolve warning:', navErr.message);
             }
-          } catch (navErr) {
-            console.warn('[ScraperManager] Chapter navigation resolve warning:', navErr.message);
           }
-        }
 
-        return {
-          ...comickPageData,
-          manga: resolvedManga || { id: mangaId, title: 'Manga' },
-          chapter: {
-            id: chapterId,
-            chapter: String(targetNum),
-            title: `Chapter ${targetNum}`
-          },
-          prevChapter,
-          nextChapter,
-          allChapters,
-          source: 'comick'
-        };
+          return {
+            ...comickPageData,
+            manga: resolvedManga || { id: mangaId, title: 'Manga' },
+            chapter: {
+              id: chapterId,
+              chapter: String(targetNum),
+              title: `Chapter ${targetNum}`
+            },
+            prevChapter,
+            nextChapter,
+            allChapters,
+            source: 'comick'
+          };
+        }
+      } catch (comickErr) {
+        console.warn('[ScraperManager] Comick chapter pages failed:', comickErr.message);
       }
-    } catch (comickErr) {
-      console.warn('[ScraperManager] Comick chapter pages failed, falling back to MangaDex:', comickErr.message);
     }
 
-    // --- FALLBACK: Try MangaDex if Comick failed ---
+    // --- Resolve to MangaDex ---
     let mdId = null;
 
     if (mangaId) {
@@ -244,17 +296,15 @@ export class ScraperManager {
         mdId = mangaId;
       } else {
         try {
-          if (!mangaDetail) {
-            mangaDetail = await this.getDetail(mangaId);
-          }
-          if (mangaDetail.matchedMangaDexId) {
+          mangaDetail = await this.getDetail(mangaId);
+          if (mangaDetail?.matchedMangaDexId) {
             mdId = mangaDetail.matchedMangaDexId;
-          } else {
-            const match = await this.searchMangaDexFallback(mangaDetail.title, mangaDetail.altTitles);
-            if (match) mdId = match.id;
+          } else if (mangaDetail?.id && /^[0-9a-f]{8}-/.test(mangaDetail.id)) {
+            // getDetail may have resolved to a MangaDex item
+            mdId = mangaDetail.id;
           }
         } catch (e) {
-          console.warn('[ScraperManager] Detail lookup failed during MangaDex fallback resolve:', e.message);
+          console.warn('[ScraperManager] Detail lookup failed during chapter resolve:', e.message);
         }
       }
     }
@@ -269,7 +319,6 @@ export class ScraperManager {
           // Find exact match or closest
           let matchedChapter = sortedChapters.find(c => c.number === targetNum);
           if (!matchedChapter) {
-            // Find closest chapter
             matchedChapter = sortedChapters.reduce((prev, curr) =>
               Math.abs(curr.number - targetNum) < Math.abs(prev.number - targetNum) ? curr : prev
             , sortedChapters[0]);
@@ -300,7 +349,7 @@ export class ScraperManager {
       }
     }
 
-    // Fallback placeholder pages if source has no mirrors yet
+    // Fallback placeholder pages if no source had pages
     const fallbackPages = Array.from({ length: 5 }, (_, i) => ({
       pageNumber: i + 1,
       url: `https://placehold.co/800x1200/0f111a/f43f5e?text=${encodeURIComponent((mangaDetail?.title || 'Manga') + ' - Chapter ' + targetNum + ' (Page ' + (i + 1) + ')')}`,

@@ -159,7 +159,14 @@ export class MangaDexScraper {
     const response = await this.fetchJson(`/manga/${mangaId}/feed`, params);
     const rawChapters = response.data || [];
 
-    const chapters = rawChapters.map(ch => {
+    const chapters = rawChapters
+      .filter(ch => {
+        const attr = ch.attributes || {};
+        // Skip external-only chapters (e.g. MangaPlus links) that have no uploaded pages
+        if (attr.externalUrl && (!attr.pages || attr.pages === 0)) return false;
+        return true;
+      })
+      .map(ch => {
       const attr = ch.attributes || {};
       const rels = ch.relationships || [];
       const group = rels.find(r => r.type === 'scanlation_group');
