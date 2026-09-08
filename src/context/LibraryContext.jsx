@@ -60,6 +60,39 @@ export function LibraryProvider({ children }) {
     return bm ? bm.category : null;
   };
 
+  const setBookmarkCategory = async (manga, category) => {
+    const record = {
+      mangaId: manga.id || manga.slug,
+      mangaSlug: manga.slug || manga.id,
+      title: manga.title,
+      coverUrl: manga.coverUrl || manga.poster?.large || manga.poster?.medium,
+      type: manga.type || 'manhwa',
+      status: manga.status || 'releasing',
+      category,
+      rating: manga.rating || 0
+    };
+    setBookmarks(prev => {
+      const filtered = prev.filter(b => b.mangaId !== record.mangaId && b.mangaSlug !== record.mangaSlug);
+      return [record, ...filtered];
+    });
+    await api.saveBookmark(record);
+  };
+
+  const removeBookmark = async (mangaId, mangaSlug) => {
+    const id = mangaId || mangaSlug;
+    setBookmarks(prev => prev.filter(b => b.mangaId !== id && b.mangaSlug !== id));
+    await api.removeBookmark(id);
+  };
+
+  const getHistoryForManga = (mangaId, mangaSlug) => {
+    return history.find(h => h.mangaId === mangaId || (mangaSlug && h.mangaSlug === mangaSlug)) || null;
+  };
+
+  const isChapterRead = (mangaId, mangaSlug, chapterId) => {
+    const h = getHistoryForManga(mangaId, mangaSlug);
+    return h ? h.chapterId === chapterId : false;
+  };
+
   const updateProgress = async ({ manga, chapter, progress = 0 }) => {
     const record = {
       mangaId: manga.id || manga.slug,
@@ -108,6 +141,10 @@ export function LibraryProvider({ children }) {
         toggleBookmark,
         isBookmarked,
         getBookmarkCategory,
+        setBookmarkCategory,
+        removeBookmark,
+        isChapterRead,
+        getHistoryForManga,
         updateProgress,
         deleteHistoryItem,
         clearAllHistory,
